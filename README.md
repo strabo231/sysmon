@@ -1,3 +1,5 @@
+[![Test SysMon](https://github.com/strabo231/sysmon/actions/workflows/test.yml/badge.svg)](https://github.com/strabo231/sysmon/actions/workflows/test.yml)
+
 # SysMon - System Resource Monitor
 
 Make `top` and `htop` look ancient! SysMon is a beautiful, intuitive system monitor for the command line.
