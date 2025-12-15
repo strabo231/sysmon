@@ -4,7 +4,7 @@ set -e
 
 INSTALL_DIR="/usr/local/bin"
 SCRIPT_NAME="sysmon"
-REPO_URL="https://raw.githubusercontent.com/YOUR_USERNAME/sysmon/main/sysmon"
+REPO_URL="https://raw.githubusercontent.com/strabo231/sysmon/main/sysmon"
 
 echo "📊 SysMon Installer"
 echo "==================="
