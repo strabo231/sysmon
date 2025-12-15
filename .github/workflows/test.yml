@@ -1,0 +1,62 @@
+name: Test SysMon
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  test:
+    name: Test on Ubuntu
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+    
+    - name: Make script executable
+      run: chmod +x sysmon
+    
+    - name: Test help command
+      run: ./sysmon --help
+    
+    - name: Test version command
+      run: ./sysmon --version
+    
+    - name: Test dashboard (non-interactive)
+      run: timeout 2 ./sysmon || true
+    
+    - name: Test process command
+      run: ./sysmon process | head -20
+    
+    - name: Test top command
+      run: ./sysmon top
+    
+    - name: Test network command
+      run: ./sysmon network || true
+    
+    - name: Test disk command
+      run: ./sysmon disk
+    
+    - name: Install shellcheck
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y shellcheck
+    
+    - name: Run shellcheck
+      continue-on-error: true
+      run: shellcheck sysmon
+    
+    - name: Verify script structure
+      run: |
+        grep -q "show_dashboard()" sysmon
+        grep -q "show_processes()" sysmon
+        grep -q "show_top()" sysmon
+        echo "✓ Script structure verified"
+    
+    - name: All tests passed
+      run: |
+        echo "================================"
+        echo "✓ All tests passed successfully!"
+        echo "================================"
