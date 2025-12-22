@@ -1,9 +1,9 @@
 #!/bin/bash
 
 # SysMon - System Resource Monitor
-# Version: 1.0.0
+# Version: 1.1.0
 
-VERSION="1.0.0"
+VERSION="1.1.0"
 SCRIPT_NAME="sysmon"
 
 # Colors
@@ -35,6 +35,7 @@ ${YELLOW}Commands:${NC}
     top                      Top resource consumers
     network                  Network connections
     disk                     Disk I/O and usage
+    gpu                      GPU monitoring (NVIDIA/AMD/Intel)
     kill <pid>               Kill a process
     watch                    Live monitoring mode
 
@@ -55,6 +56,9 @@ ${YELLOW}Examples:${NC}
 
     $SCRIPT_NAME network
         → Show network activity
+
+    $SCRIPT_NAME gpu
+        → Monitor GPU usage
 
     $SCRIPT_NAME kill 1234
         → Kill process 1234
@@ -140,6 +144,257 @@ get_uptime() {
     uptime -p 2>/dev/null || uptime | awk -F'up ' '{print $2}' | awk -F',' '{print $1}'
 }
 
+# Detect GPU type
+detect_gpu() {
+    if command -v nvidia-smi &> /dev/null; then
+        echo "nvidia"
+    elif command -v radeontop &> /dev/null || [ -d /sys/class/drm ] && ls /sys/class/drm/card*/device/vendor 2>/dev/null | xargs cat 2>/dev/null | grep -q "0x1002"; then
+        echo "amd"
+    elif lspci 2>/dev/null | grep -i vga | grep -iq intel; then
+        echo "intel"
+    else
+        echo "none"
+    fi
+}
+
+# Get NVIDIA GPU info
+get_nvidia_info() {
+    if ! command -v nvidia-smi &> /dev/null; then
+        return 1
+    fi
+    
+    nvidia-smi --query-gpu=index,name,utilization.gpu,utilization.memory,memory.used,memory.total,temperature.gpu,power.draw,power.limit,fan.speed --format=csv,noheader,nounits 2>/dev/null
+}
+
+# Get AMD GPU info
+get_amd_info() {
+    local gpu_info=""
+    local gpu_count=0
+    
+    # Try using rocm-smi first
+    if command -v rocm-smi &> /dev/null; then
+        rocm-smi --showuse --showmeminfo vram --showtemp --showpower 2>/dev/null
+        return 0
+    fi
+    
+    # Fallback to sysfs
+    for card in /sys/class/drm/card*/device; do
+        if [ -f "$card/vendor" ]; then
+            local vendor=$(cat "$card/vendor" 2>/dev/null)
+            if [ "$vendor" = "0x1002" ]; then
+                local name=$(cat "$card/product_name" 2>/dev/null || echo "AMD GPU $gpu_count")
+                local busy_percent=$(cat "$card/gpu_busy_percent" 2>/dev/null || echo "N/A")
+                local temp=$(cat "$card/hwmon/hwmon*/temp1_input" 2>/dev/null | head -1)
+                [ -n "$temp" ] && temp=$((temp / 1000)) || temp="N/A"
+                
+                echo "GPU $gpu_count: $name"
+                echo "  Usage: ${busy_percent}%"
+                echo "  Temp: ${temp}°C"
+                echo ""
+                gpu_count=$((gpu_count + 1))
+            fi
+        fi
+    done
+    
+    [ $gpu_count -gt 0 ] && return 0 || return 1
+}
+
+# Get Intel GPU info
+get_intel_info() {
+    if command -v intel_gpu_top &> /dev/null; then
+        # intel_gpu_top requires root and JSON parsing, so we'll use a simpler approach
+        timeout 1 intel_gpu_top -J 2>/dev/null | head -20
+        return 0
+    fi
+    
+    # Basic info from sysfs
+    local gpu_info=""
+    for card in /sys/class/drm/card*/device; do
+        if [ -f "$card/vendor" ]; then
+            local vendor=$(cat "$card/vendor" 2>/dev/null)
+            if [ "$vendor" = "0x8086" ]; then
+                local name=$(lspci | grep -i vga | grep -i intel | head -1 | cut -d: -f3)
+                echo "Intel GPU: $name"
+                echo "  Use 'intel_gpu_top' for detailed monitoring"
+                return 0
+            fi
+        fi
+    done
+    
+    return 1
+}
+
+# Show GPU dashboard
+show_gpu() {
+    print_header "═══════════════════════════════════════════════════════════════"
+    print_header "                      GPU MONITORING"
+    print_header "═══════════════════════════════════════════════════════════════"
+    echo ""
+    
+    local gpu_type=$(detect_gpu)
+    
+    case "$gpu_type" in
+        nvidia)
+            show_nvidia_gpu
+            ;;
+        amd)
+            show_amd_gpu
+            ;;
+        intel)
+            show_intel_gpu
+            ;;
+        none)
+            print_warning "No supported GPU detected or drivers not installed"
+            echo ""
+            echo "Supported GPUs:"
+            echo "  • NVIDIA (requires nvidia-smi)"
+            echo "  • AMD (requires rocm-smi or sysfs access)"
+            echo "  • Intel (basic support via sysfs)"
+            echo ""
+            echo "Install instructions:"
+            echo "  NVIDIA: Install NVIDIA drivers"
+            echo "  AMD: Install ROCm (rocm-smi)"
+            echo "  Intel: Install intel-gpu-tools"
+            ;;
+    esac
+}
+
+# Show NVIDIA GPU details
+show_nvidia_gpu() {
+    echo -e "${BOLD}${GREEN}NVIDIA GPU Detected${NC}"
+    echo ""
+    
+    local gpu_data=$(get_nvidia_info)
+    
+    if [ -z "$gpu_data" ]; then
+        print_error "Failed to get NVIDIA GPU information"
+        return 1
+    fi
+    
+    echo "$gpu_data" | while IFS=, read -r index name gpu_util mem_util mem_used mem_total temp power power_limit fan; do
+        # Clean up values
+        name=$(echo "$name" | xargs)
+        gpu_util=$(echo "$gpu_util" | xargs)
+        mem_util=$(echo "$mem_util" | xargs)
+        mem_used=$(echo "$mem_used" | xargs)
+        mem_total=$(echo "$mem_total" | xargs)
+        temp=$(echo "$temp" | xargs)
+        power=$(echo "$power" | xargs)
+        power_limit=$(echo "$power_limit" | xargs)
+        fan=$(echo "$fan" | xargs)
+        
+        echo -e "${CYAN}${BOLD}GPU $index: $name${NC}"
+        echo ""
+        
+        # GPU Utilization
+        local gpu_color=$(get_color ${gpu_util%.*})
+        echo -e "${BOLD}GPU Utilization:${NC} ${gpu_color}${gpu_util}%${NC}"
+        printf "["
+        local bars=$((${gpu_util%.*} / 2))
+        for i in $(seq 1 50); do
+            if [ $i -le $bars ]; then
+                printf "${gpu_color}█${NC}"
+            else
+                printf "░"
+            fi
+        done
+        printf "]\n"
+        echo ""
+        
+        # Memory Utilization
+        local mem_color=$(get_color ${mem_util%.*})
+        echo -e "${BOLD}Memory Utilization:${NC} ${mem_color}${mem_util}%${NC} (${mem_used}MB / ${mem_total}MB)"
+        printf "["
+        local bars=$((${mem_util%.*} / 2))
+        for i in $(seq 1 50); do
+            if [ $i -le $bars ]; then
+                printf "${mem_color}█${NC}"
+            else
+                printf "░"
+            fi
+        done
+        printf "]\n"
+        echo ""
+        
+        # Temperature
+        local temp_color=$(get_color ${temp%.*})
+        echo -e "${BOLD}Temperature:${NC} ${temp_color}${temp}°C${NC}"
+        echo ""
+        
+        # Power Draw
+        if [ "$power" != "[N/A]" ] && [ -n "$power" ]; then
+            local power_percent=$((${power%.*} * 100 / ${power_limit%.*}))
+            local power_color=$(get_color $power_percent)
+            echo -e "${BOLD}Power Draw:${NC} ${power_color}${power}W${NC} / ${power_limit}W (${power_percent}%)"
+            echo ""
+        fi
+        
+        # Fan Speed
+        if [ "$fan" != "[N/A]" ] && [ -n "$fan" ]; then
+            echo -e "${BOLD}Fan Speed:${NC} ${fan}%"
+            echo ""
+        fi
+        
+        echo "────────────────────────────────────────────────────────────────────"
+        echo ""
+    done
+    
+    # GPU Processes
+    echo -e "${BOLD}GPU Processes:${NC}"
+    echo ""
+    
+    local processes=$(nvidia-smi pmon -c 1 2>/dev/null | grep -v '^#' | tail -n +2)
+    
+    if [ -n "$processes" ]; then
+        printf "${CYAN}%-8s %-8s %-8s %-10s %-10s %-30s${NC}\n" "GPU" "PID" "TYPE" "SM %" "MEM %" "NAME"
+        echo "────────────────────────────────────────────────────────────────────"
+        echo "$processes" | while read line; do
+            if [ -n "$line" ]; then
+                echo "$line" | awk '{printf "%-8s %-8s %-8s %-10s %-10s %-30s\n", $1, $2, $3, $4"%", $5"%", substr($6,1,30)}'
+            fi
+        done
+    else
+        echo "  No active GPU processes"
+    fi
+    
+    echo ""
+}
+
+# Show AMD GPU details
+show_amd_gpu() {
+    echo -e "${BOLD}${RED}AMD GPU Detected${NC}"
+    echo ""
+    
+    if ! get_amd_info; then
+        print_warning "Limited AMD GPU information available"
+        echo ""
+        echo "For full monitoring, install ROCm:"
+        echo "  https://rocm.docs.amd.com/"
+        echo ""
+    fi
+}
+
+# Show Intel GPU details
+show_intel_gpu() {
+    echo -e "${BOLD}${BLUE}Intel GPU Detected${NC}"
+    echo ""
+    
+    if ! get_intel_info; then
+        local gpu_name=$(lspci | grep -i vga | grep -i intel | head -1 | cut -d: -f3)
+        echo "GPU: $gpu_name"
+        echo ""
+        print_warning "Limited Intel GPU information available"
+        echo ""
+        echo "For detailed monitoring, install intel-gpu-tools:"
+        echo "  sudo apt install intel-gpu-tools    # Ubuntu/Debian"
+        echo "  sudo dnf install intel-gpu-tools    # Fedora"
+        echo ""
+        echo "Then run with sudo: sudo intel_gpu_top"
+    fi
+    
+    echo ""
+}
+
 # Show dashboard
 show_dashboard() {
     clear
@@ -208,6 +463,28 @@ show_dashboard() {
     echo -e "${BOLD}Load Average:${NC} $(get_load_average)"
     echo ""
     
+    # GPU info (if available)
+    local gpu_type=$(detect_gpu)
+    if [ "$gpu_type" != "none" ]; then
+        case "$gpu_type" in
+            nvidia)
+                local gpu_util=$(nvidia-smi --query-gpu=utilization.gpu --format=csv,noheader,nounits 2>/dev/null | head -1 | xargs)
+                local gpu_temp=$(nvidia-smi --query-gpu=temperature.gpu --format=csv,noheader,nounits 2>/dev/null | head -1 | xargs)
+                local gpu_name=$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | head -1)
+                
+                if [ -n "$gpu_util" ]; then
+                    local gpu_color=$(get_color ${gpu_util%.*})
+                    echo -e "${BOLD}GPU (${gpu_name}):${NC} ${gpu_color}${gpu_util}%${NC} | ${gpu_temp}°C"
+                    echo ""
+                fi
+                ;;
+            amd|intel)
+                echo -e "${BOLD}GPU:${NC} ${gpu_type^^} detected (use 'sysmon gpu' for details)"
+                echo ""
+                ;;
+        esac
+    fi
+    
     # Top processes
     print_header "TOP PROCESSES (by CPU)"
     echo ""
@@ -218,7 +495,7 @@ show_dashboard() {
     
     print_header "═══════════════════════════════════════════════════════════════"
     echo ""
-    print_info "Commands: sysmon process | sysmon network | sysmon disk | sysmon top"
+    print_info "Commands: sysmon process | sysmon gpu | sysmon network | sysmon disk | sysmon top"
     echo ""
 }
 
@@ -389,6 +666,9 @@ case "$COMMAND" in
         ;;
     disk|df)
         show_disk
+        ;;
+    gpu)
+        show_gpu
         ;;
     kill)
         kill_process "$@"

@@ -39,6 +39,9 @@ jobs:
     - name: Test disk command
       run: ./sysmon disk
     
+    - name: Test GPU command (no GPU expected)
+      run: ./sysmon gpu || true
+    
     - name: Install shellcheck
       run: |
         sudo apt-get update
@@ -53,6 +56,8 @@ jobs:
         grep -q "show_dashboard()" sysmon
         grep -q "show_processes()" sysmon
         grep -q "show_top()" sysmon
+        grep -q "show_gpu()" sysmon
+        grep -q "detect_gpu()" sysmon
         echo "✓ Script structure verified"
     
     - name: All tests passed
